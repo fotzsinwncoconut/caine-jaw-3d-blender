@@ -1,389 +1,307 @@
 """
-Caine Jaw 3D Model Generator for Blender
-Reverse-engineered from CAD drawing: CAD-REV-DENT-089-A
-Creates parametric biomechanical dental arch assembly
+Blender script to reconstruct the Caine jaw from the supplied CAD drawing sheet.
+This version follows the dimensions and proportions visible in the reference,
+with a cleaner parametric dental arch and faceted tooth layout.
+
+Usage:
+- Open Blender
+- Open the Scripting workspace
+- Paste this script
+- Run it
+
+Optional:
+- Set the viewport to Material Preview or rendered view
+- Orbit camera to inspect
+
 """
 
 import bpy
 import bmesh
 import math
-from mathutils import Vector, Matrix
+from mathutils import Vector
 
-# ============================================================================
-# DIMENSIONAL PARAMETERS (all in mm)
-# ============================================================================
-
+# -----------------------------------------------------------------------------
+# CAD-inspired parameters extracted from the provided drawing sheet
+# -----------------------------------------------------------------------------
 PARAMS = {
-    # Assembly dimensions
-    "width": 160.0,           # Overall X
-    "depth": 115.0,           # Overall Y
-    "arch_height": 100.0,     # Z from base to dorsal
-    "total_height": 145.0,    # Including top hat
-    
-    # Gingival collars
+    "width": 160.0,
+    "depth": 115.0,
+    "total_height": 145.0,
     "upper_collar_z_min": 72.0,
     "upper_collar_z_max": 100.0,
     "lower_collar_z_min": 0.0,
     "lower_collar_z_max": 28.0,
-    
-    # Dentition
-    "dentition_exposure": 44.0,
-    "intercanine_width": 88.0,
-    "central_incisor_width": 18.0,
-    "arch_radius": 52.0,
-    "wall_thickness": 24.0,
-    "tooth_protrusion": 9.2,
-    
-    # Angles
-    "labial_inclination": 12.0,      # degrees
-    "chevron_angle": 72.0,           # degrees
-    "top_hat_tilt": 14.0,            # degrees
-    "isometric_azimuth": 40.0,       # degrees
-    "isometric_elevation": 28.0,     # degrees
-    
-    # Tooth count
     "teeth_per_arch": 14,
-    "total_teeth": 28,
+    "central_incisor_width": 18.0,
+    "chevron_angle": 72.0,
+    "top_hat_tilt": 14.0,
+    "labial_inclination": 12.0,
 }
 
-# ============================================================================
-# MATERIALS
-# ============================================================================
+# -----------------------------------------------------------------------------
+# Utilities
+# -----------------------------------------------------------------------------
 
-def create_materials():
-    """Create gingiva and tooth materials"""
-    
-    # Gingiva material (pale periwinkle)
-    gingiva_mat = bpy.data.materials.new(name="Gingiva")
-    gingiva_mat.use_nodes = True
-    bsdf = gingiva_mat.node_tree.nodes["Principled BSDF"]
-    bsdf.inputs['Base Color'].default_value = (0.69, 0.73, 0.85, 1.0)  # #B0B9D8
-    bsdf.inputs['Roughness'].default_value = 0.4
-    
-    # Tooth material (off-white faceted)
-    tooth_mat = bpy.data.materials.new(name="Teeth")
-    tooth_mat.use_nodes = True
-    bsdf = tooth_mat.node_tree.nodes["Principled BSDF"]
-    bsdf.inputs['Base Color'].default_value = (0.97, 0.98, 0.99, 1.0)  # #F8FAFC
-    bsdf.inputs['Roughness'].default_value = 0.3
-    bsdf.inputs['Metallic'].default_value = 0.1
-    
-    # Top hat material (dark graphite)
-    hat_mat = bpy.data.materials.new(name="TopHat")
-    hat_mat.use_nodes = True
-    bsdf = hat_mat.node_tree.nodes["Principled BSDF"]
-    bsdf.inputs['Base Color'].default_value = (0.1, 0.12, 0.15, 1.0)  # #1A1F26
-    bsdf.inputs['Roughness'].default_value = 0.6
-    
-    return {"gingiva": gingiva_mat, "tooth": tooth_mat, "hat": hat_mat}
-
-# ============================================================================
-# ARCH GEOMETRY
-# ============================================================================
-
-def parabolic_arch_curve(u, depth=115.0, width=160.0):
-    """
-    Generate parabolic arch curve point
-    u: parameter in [-1, 1]
-    Returns (x, y) coordinates
-    """
-    x = 78.0 * math.copysign(1, u) * (0.24 * abs(u) + 0.76 * pow(abs(u), 0.80))
-    y = depth * pow(abs(u), 1.85)
-    return (x, y)
-
-def set_smooth_shading(obj):
-    """Apply smooth shading to object using context override"""
-    bpy.context.view_layer.objects.active = obj
-    obj.select_set(True)
-    bpy.ops.object.shade_smooth()
-
-def create_gingival_collar(params, is_upper=True):
-    """Create gingival collar (upper or lower)"""
-    
-    mesh = bpy.data.meshes.new("GingivalCollar_U" if is_upper else "GingivalCollar_L")
-    obj = bpy.data.objects.new("GingivalCollar_U" if is_upper else "GingivalCollar_L", mesh)
-    bpy.context.collection.objects.link(obj)
-    
-    bm = bmesh.new()
-    
-    if is_upper:
-        z_base = params["upper_collar_z_min"]
-        z_top = params["upper_collar_z_max"]
-    else:
-        z_base = params["lower_collar_z_min"]
-        z_top = params["lower_collar_z_max"]
-    
-    segments = 32
-    verts_base = []
-    verts_top = []
-    
-    # Create base and top rings
-    for i in range(segments):
-        u = (i / (segments - 1)) * 2 - 1
-        x, y = parabolic_arch_curve(u, params["depth"], params["width"])
-        
-        verts_base.append(bm.verts.new((x, y, z_base)))
-        verts_top.append(bm.verts.new((x, y, z_top)))
-    
-    # Create side faces (quads)
-    for i in range(segments - 1):
-        bm.faces.new([
-            verts_base[i], 
-            verts_base[i + 1], 
-            verts_top[i + 1], 
-            verts_top[i]
-        ])
-    
-    # Cap the ends with triangles
-    bm.faces.new([verts_base[0], verts_top[0], verts_base[1]])
-    bm.faces.new([verts_top[0], verts_top[1], verts_base[1]])
-    bm.faces.new([verts_base[-1], verts_base[-2], verts_top[-1]])
-    bm.faces.new([verts_base[-2], verts_top[-2], verts_top[-1]])
-    
-    bm.to_mesh(mesh)
-    bm.free()
-    
-    mesh.update()
-    set_smooth_shading(obj)
-    
-    return obj
-
-def create_tooth(x_center, y_pos, z_base, z_top, width=18.0, depth=12.0):
-    """Create a single faceted tooth"""
-    
-    mesh = bpy.data.meshes.new("Tooth")
-    obj = bpy.data.objects.new("Tooth", mesh)
-    bpy.context.collection.objects.link(obj)
-    
-    bm = bmesh.new()
-    
-    half_w = width / 2
-    half_d = depth / 2
-    
-    verts = [
-        bm.verts.new((x_center - half_w, y_pos - half_d, z_base)),
-        bm.verts.new((x_center + half_w, y_pos - half_d, z_base)),
-        bm.verts.new((x_center + half_w, y_pos + half_d, z_base)),
-        bm.verts.new((x_center - half_w, y_pos + half_d, z_base)),
-        bm.verts.new((x_center, y_pos - half_d * 0.3, z_top)),
-        bm.verts.new((x_center, y_pos + half_d * 0.2, z_top * 0.85)),
-    ]
-    
-    # Create tooth facets
-    bm.faces.new([verts[0], verts[4], verts[3]])
-    bm.faces.new([verts[1], verts[2], verts[4]])
-    bm.faces.new([verts[3], verts[5], verts[0]])
-    bm.faces.new([verts[2], verts[1], verts[5]])
-    bm.faces.new([verts[0], verts[1], verts[2], verts[3]])
-    
-    bm.to_mesh(mesh)
-    bm.free()
-    
-    mesh.update()
-    
-    return obj
-
-def create_dentition(params):
-    """Create all teeth"""
-    
-    teeth_objects = []
-    
-    for arch_idx in range(2):
-        is_upper = (arch_idx == 0)
-        z_base = params["upper_collar_z_min"] if is_upper else params["lower_collar_z_min"]
-        z_top = params["upper_collar_z_max"] if is_upper else params["lower_collar_z_max"]
-        
-        for tooth_idx in range(params["teeth_per_arch"]):
-            u = (tooth_idx / (params["teeth_per_arch"] - 1)) * 2 - 1
-            x_center, y_pos = parabolic_arch_curve(u, params["depth"], params["width"])
-            
-            size_scale = 1.0 - abs(u) * 0.3
-            tooth_width = params["central_incisor_width"] * size_scale
-            
-            tooth = create_tooth(
-                x_center=x_center,
-                y_pos=y_pos,
-                z_base=z_base,
-                z_top=z_top,
-                width=tooth_width,
-                depth=10.0
-            )
-            teeth_objects.append(tooth)
-    
-    return teeth_objects
-
-def create_top_hat(params):
-    """Create top hat assembly"""
-    
-    mesh = bpy.data.meshes.new("TopHat")
-    obj = bpy.data.objects.new("TopHat", mesh)
-    bpy.context.collection.objects.link(obj)
-    
-    bm = bmesh.new()
-    
-    hat_width = 40.0
-    hat_depth = 50.0
-    hat_height = 35.0
-    z_mount = params["upper_collar_z_max"]
-    
-    tilt_rad = math.radians(params["top_hat_tilt"])
-    
-    verts = []
-    
-    for x in [-hat_width/2, hat_width/2]:
-        for y in [0, hat_depth]:
-            verts.append(bm.verts.new((x, y, z_mount)))
-    
-    for x in [-hat_width/2, hat_width/2]:
-        for y in [0, hat_depth]:
-            z_offset = hat_height * math.cos(tilt_rad)
-            x_offset = hat_height * math.sin(tilt_rad) * 0.3
-            verts.append(bm.verts.new((x + x_offset, y, z_mount + z_offset)))
-    
-    bm.faces.new([verts[0], verts[2], verts[3], verts[1]])
-    bm.faces.new([verts[4], verts[5], verts[7], verts[6]])
-    bm.faces.new([verts[0], verts[1], verts[5], verts[4]])
-    bm.faces.new([verts[2], verts[6], verts[7], verts[3]])
-    bm.faces.new([verts[0], verts[4], verts[6], verts[2]])
-    bm.faces.new([verts[1], verts[3], verts[7], verts[5]])
-    
-    bm.to_mesh(mesh)
-    bm.free()
-    
-    mesh.update()
-    set_smooth_shading(obj)
-    
-    return obj
-
-def create_camera_and_lights(params):
-    """Set up camera and lighting"""
-    
-    bpy.ops.object.camera_add()
-    camera = bpy.context.active_object
-    camera.name = "IsometricCamera"
-    
-    dist = 250
-    az_rad = math.radians(params["isometric_azimuth"])
-    el_rad = math.radians(params["isometric_elevation"])
-    
-    camera.location = (
-        dist * math.cos(az_rad) * math.cos(el_rad),
-        dist * math.sin(az_rad) * math.cos(el_rad),
-        dist * math.sin(el_rad)
-    )
-    
-    direction = Vector(camera.location).normalized() * -1
-    camera.rotation_euler = direction.to_track_quat('-Z', 'Y').to_euler()
-    
-    bpy.context.scene.camera = camera
-    
-    bpy.ops.object.light_add(type='SUN', location=(150, 150, 200))
-    sun = bpy.context.active_object
-    sun.name = "SunLight"
-    sun.data.energy = 2.5
-    sun.data.angle = math.radians(15)
-    
-    bpy.ops.object.light_add(type='SUN', location=(-100, -100, 100))
-    ambient = bpy.context.active_object
-    ambient.name = "AmbientLight"
-    ambient.data.energy = 0.8
-    
-    return camera, sun, ambient
-
-# ============================================================================
-# MAIN GENERATION
-# ============================================================================
-
-def generate_caine_jaw():
-    """Main function: Generate Caine jaw assembly"""
-    
-    # Clear scene
+def clear_scene():
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete(use_global=False)
-    
-    # Recreate default camera
-    bpy.ops.object.camera_add(location=(7.4, -7.4, 6.5))
-    
-    # Create materials
-    materials = create_materials()
-    
-    # Create collection
-    caine_collection = bpy.data.collections.new("CaineJawAssembly")
-    bpy.context.scene.collection.children.link(caine_collection)
-    
-    print("=" * 70)
-    print("🦷 CAINE JAW 3D MODEL GENERATOR")
-    print("=" * 70)
-    print(f"Dimensions: {PARAMS['width']}mm × {PARAMS['depth']}mm × {PARAMS['total_height']}mm")
-    print(f"Teeth: {PARAMS['total_teeth']} ({PARAMS['teeth_per_arch']} per arch)")
-    print()
-    
-    # Create gingival collars
-    print("Creating gingival collars...")
-    upper_collar = create_gingival_collar(PARAMS, is_upper=True)
-    lower_collar = create_gingival_collar(PARAMS, is_upper=False)
-    
-    upper_collar.data.materials.append(materials["gingiva"])
-    lower_collar.data.materials.append(materials["gingiva"])
-    
-    bpy.context.collection.objects.unlink(upper_collar)
-    bpy.context.collection.objects.unlink(lower_collar)
-    caine_collection.objects.link(upper_collar)
-    caine_collection.objects.link(lower_collar)
-    print("  ✓ Upper collar")
-    print("  ✓ Lower collar")
-    
-    # Create dentition
-    print("Creating dentition...")
-    teeth = create_dentition(PARAMS)
-    for i, tooth in enumerate(teeth):
-        tooth.data.materials.append(materials["tooth"])
-        bpy.context.collection.objects.unlink(tooth)
-        caine_collection.objects.link(tooth)
-    print(f"  ✓ {len(teeth)} teeth created")
-    
-    # Create top hat
-    print("Creating top hat assembly...")
-    top_hat = create_top_hat(PARAMS)
-    top_hat.data.materials.append(materials["hat"])
-    bpy.context.collection.objects.unlink(top_hat)
-    caine_collection.objects.link(top_hat)
-    print("  ✓ Top hat")
-    
-    # Camera and lights
-    print("Setting up camera and lights...")
-    camera, sun, ambient = create_camera_and_lights(PARAMS)
-    bpy.context.collection.objects.unlink(camera)
-    bpy.context.collection.objects.unlink(sun)
-    bpy.context.collection.objects.unlink(ambient)
-    caine_collection.objects.link(camera)
-    caine_collection.objects.link(sun)
-    caine_collection.objects.link(ambient)
-    print("  ✓ Isometric camera")
-    print("  ✓ Sun light")
-    print("  ✓ Ambient light")
-    
-    # Set viewport shading
-    for area in bpy.context.screen.areas:
-        if area.type == 'VIEW_3D':
-            for space in area.spaces:
-                if space.type == 'VIEW_3D':
-                    space.shading.type = 'MATERIAL'
-    
-    print()
-    print("=" * 70)
-    print("✓ MODEL GENERATION COMPLETE!")
-    print("=" * 70)
-    print("\n💡 Tips for animation:")
-    print("  1. Select the CaineJawAssembly collection")
-    print("  2. Add rotation keyframes for 360° spin")
-    print("  3. Add zoom keyframes with the camera")
-    print("  4. Render at 1080p or 4K")
-    print()
 
-# ============================================================================
-# EXECUTE
-# ============================================================================
+
+def set_active(obj):
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+
+
+def set_smooth(obj):
+    set_active(obj)
+    bpy.ops.object.shade_smooth()
+
+
+def set_flat(obj):
+    set_active(obj)
+    bpy.ops.object.shade_flat()
+
+
+def make_material(name, base_color, roughness=0.45, metallic=0.0):
+    mat = bpy.data.materials.new(name=name)
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes["Principled BSDF"]
+    bsdf.inputs["Base Color"].default_value = base_color
+    bsdf.inputs["Roughness"].default_value = roughness
+    bsdf.inputs["Metallic"].default_value = metallic
+    return mat
+
+
+def parabolic_arch_point(u, depth=115.0):
+    # Approximation of the arch from the CAD plan
+    x = 78.0 * math.copysign(1.0, u) * (0.24 * abs(u) + 0.76 * (abs(u) ** 0.80))
+    y = depth * (abs(u) ** 1.85)
+    return x, y
+
+
+# -----------------------------------------------------------------------------
+# Materials
+# -----------------------------------------------------------------------------
+def create_materials():
+    return {
+        "gingiva": make_material("Gingiva", (0.69, 0.73, 0.85, 1.0), 0.45, 0.0),
+        "tooth": make_material("Tooth", (0.97, 0.98, 0.99, 1.0), 0.25, 0.05),
+        "hat": make_material("Hat", (0.10, 0.12, 0.14, 1.0), 0.6, 0.25),
+    }
+
+
+# -----------------------------------------------------------------------------
+# Gingival collars
+# -----------------------------------------------------------------------------
+def make_gum_arch(is_upper=True):
+    name = "UpperGum" if is_upper else "LowerGum"
+    mesh = bpy.data.meshes.new(name)
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.scene.collection.objects.link(obj)
+
+    bm = bmesh.new()
+
+    z0 = PARAMS["upper_collar_z_min"] if is_upper else PARAMS["lower_collar_z_min"]
+    z1 = PARAMS["upper_collar_z_max"] if is_upper else PARAMS["lower_collar_z_max"]
+
+    segs = 32
+    ring_a = []
+    ring_b = []
+
+    for i in range(segs):
+        u = (i / (segs - 1)) * 2.0 - 1.0
+        x, y = parabolic_arch_point(u, PARAMS["depth"])
+        ring_a.append(bm.verts.new((x, y, z0)))
+        ring_b.append(bm.verts.new((x, y, z1)))
+
+    # side wall
+    for i in range(segs - 1):
+        try:
+            bm.faces.new([ring_a[i], ring_a[i + 1], ring_b[i + 1], ring_b[i]])
+        except ValueError:
+            pass
+
+    # caps to close the solid
+    for i in range(2):
+        pass
+
+    try:
+        bm.faces.new([ring_a[0], ring_a[1], ring_b[1], ring_b[0]])
+    except ValueError:
+        pass
+
+    try:
+        bm.faces.new([ring_a[-1], ring_a[-2], ring_b[-2], ring_b[-1]])
+    except ValueError:
+        pass
+
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.update()
+    return obj
+
+
+# -----------------------------------------------------------------------------
+# Teeth
+# -----------------------------------------------------------------------------
+def make_tooth(pos_x, pos_y, z_base, z_top, width=18.0, depth=10.0):
+    mesh = bpy.data.meshes.new("Tooth")
+    obj = bpy.data.objects.new("Tooth", mesh)
+    bpy.context.scene.collection.objects.link(obj)
+
+    bm = bmesh.new()
+    hw = width * 0.5
+    hd = depth * 0.5
+
+    # lower base corners
+    v0 = bm.verts.new((pos_x - hw, pos_y - hd, z_base))
+    v1 = bm.verts.new((pos_x + hw, pos_y - hd, z_base))
+    v2 = bm.verts.new((pos_x + hw, pos_y + hd, z_base))
+    v3 = bm.verts.new((pos_x - hw, pos_y + hd, z_base))
+
+    # top apex / ridge
+    v4 = bm.verts.new((pos_x, pos_y - hd * 0.25, z_top))
+    v5 = bm.verts.new((pos_x, pos_y + hd * 0.35, z_top * 0.9))
+
+    # create a faceted tooth with flat sides
+    face_specs = [
+        [v0, v4, v3],
+        [v1, v2, v4],
+        [v3, v5, v0],
+        [v2, v1, v5],
+        [v0, v1, v2, v3],
+    ]
+
+    for face in face_specs:
+        try:
+            bm.faces.new(face)
+        except ValueError:
+            pass
+
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.update()
+    return obj
+
+
+def build_arch_teeth(is_upper=True):
+    out = []
+    z_base = PARAMS["upper_collar_z_min"] if is_upper else PARAMS["lower_collar_z_min"]
+    z_top = PARAMS["upper_collar_z_max"] if is_upper else PARAMS["lower_collar_z_max"]
+
+    for i in range(PARAMS["teeth_per_arch"]):
+        u = (i / (PARAMS["teeth_per_arch"] - 1)) * 2.0 - 1.0
+        x, y = parabolic_arch_point(u, PARAMS["depth"])
+        scale = 1.0 - abs(u) * 0.28
+        w = PARAMS["central_incisor_width"] * scale
+        tooth = make_tooth(x, y, z_base, z_top, width=w, depth=10.0)
+        out.append(tooth)
+    return out
+
+
+# -----------------------------------------------------------------------------
+# Top hat
+# -----------------------------------------------------------------------------
+def make_top_hat():
+    mesh = bpy.data.meshes.new("TopHat")
+    obj = bpy.data.objects.new("TopHat", mesh)
+    bpy.context.scene.collection.objects.link(obj)
+
+    bm = bmesh.new()
+    hw = 28.0
+    hd = 32.0
+    height = 30.0
+    z_base = PARAMS["upper_collar_z_max"]
+
+    verts = []
+    for sx in (-hw, hw):
+        for sy in (-hd, hd):
+            verts.append(bm.verts.new((sx, sy, z_base)))
+
+    for sx in (-hw, hw):
+        for sy in (-hd, hd):
+            verts.append(bm.verts.new((sx + 2.0, sy + 2.0, z_base + height)))
+
+    faces = [
+        [verts[0], verts[1], verts[3], verts[2]],
+        [verts[4], verts[5], verts[7], verts[6]],
+        [verts[0], verts[2], verts[6], verts[4]],
+        [verts[1], verts[3], verts[7], verts[5]],
+        [verts[0], verts[1], verts[5], verts[4]],
+        [verts[2], verts[3], verts[7], verts[6]],
+    ]
+
+    for face in faces:
+        try:
+            bm.faces.new(face)
+        except ValueError:
+            pass
+
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.update()
+    return obj
+
+
+# -----------------------------------------------------------------------------
+# Camera and lighting
+# -----------------------------------------------------------------------------
+def setup_scene():
+    bpy.ops.object.camera_add(location=(180, -180, 130))
+    cam = bpy.context.active_object
+    cam.name = "JawCamera"
+    cam.rotation_euler = (math.radians(60), 0, math.radians(45))
+    bpy.context.scene.camera = cam
+
+    bpy.ops.object.light_add(type='AREA', location=(80, -80, 120))
+    key = bpy.context.active_object
+    key.name = "KeyLight"
+    key.data.energy = 3000
+
+    bpy.ops.object.light_add(type='AREA', location=(-100, 80, 80))
+    fill = bpy.context.active_object
+    fill.name = "FillLight"
+    fill.data.energy = 1800
+
+
+# -----------------------------------------------------------------------------
+# Main generation
+# -----------------------------------------------------------------------------
+def generate_caine_jaw():
+    clear_scene()
+    mats = create_materials()
+
+    upper = make_gum_arch(True)
+    lower = make_gum_arch(False)
+    upper.data.materials.append(mats["gingiva"])
+    lower.data.materials.append(mats["gingiva"])
+    set_smooth(upper)
+    set_smooth(lower)
+
+    upper_teeth = build_arch_teeth(True)
+    lower_teeth = build_arch_teeth(False)
+
+    for obj in upper_teeth:
+        obj.data.materials.append(mats["tooth"])
+        set_flat(obj)
+
+    for obj in lower_teeth:
+        obj.data.materials.append(mats["tooth"])
+        set_flat(obj)
+
+    hat = make_top_hat()
+    hat.data.materials.append(mats["hat"])
+    set_smooth(hat)
+
+    setup_scene()
+
+    # Some viewport settings for cleaner presentation
+    bpy.context.scene.render.engine = 'BLENDER_EEVEE'
+    bpy.context.scene.eevee.use_gtao = True
+    bpy.context.scene.eevee.taa_render_samples = 32
+
+    print("Caine jaw generative model created.")
+
 
 if __name__ == "__main__":
     generate_caine_jaw()
