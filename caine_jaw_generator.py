@@ -91,8 +91,14 @@ def parabolic_arch_curve(u, depth=115.0, width=160.0):
     y = depth * pow(abs(u), 1.85)
     return (x, y)
 
+def set_smooth_shading(obj):
+    """Apply smooth shading to object using context override"""
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+    bpy.ops.object.shade_smooth()
+
 def create_gingival_collar(params, is_upper=True):
-    """Create gingival collar (upper or lower) - improved geometry"""
+    """Create gingival collar (upper or lower)"""
     
     mesh = bpy.data.meshes.new("GingivalCollar_U" if is_upper else "GingivalCollar_L")
     obj = bpy.data.objects.new("GingivalCollar_U" if is_upper else "GingivalCollar_L", mesh)
@@ -129,11 +135,8 @@ def create_gingival_collar(params, is_upper=True):
         ])
     
     # Cap the ends with triangles
-    # Front cap
     bm.faces.new([verts_base[0], verts_top[0], verts_base[1]])
     bm.faces.new([verts_top[0], verts_top[1], verts_base[1]])
-    
-    # Back cap
     bm.faces.new([verts_base[-1], verts_base[-2], verts_top[-1]])
     bm.faces.new([verts_base[-2], verts_top[-2], verts_top[-1]])
     
@@ -141,12 +144,12 @@ def create_gingival_collar(params, is_upper=True):
     bm.free()
     
     mesh.update()
-    obj.shade_smooth()
+    set_smooth_shading(obj)
     
     return obj
 
 def create_tooth(x_center, y_pos, z_base, z_top, width=18.0, depth=12.0):
-    """Create a single faceted tooth (diamond shape)"""
+    """Create a single faceted tooth"""
     
     mesh = bpy.data.meshes.new("Tooth")
     obj = bpy.data.objects.new("Tooth", mesh)
@@ -157,60 +160,43 @@ def create_tooth(x_center, y_pos, z_base, z_top, width=18.0, depth=12.0):
     half_w = width / 2
     half_d = depth / 2
     
-    # Create diamond faceted tooth geometry
     verts = [
-        # Base corners
-        bm.verts.new((x_center - half_w, y_pos - half_d, z_base)),  # 0: BL
-        bm.verts.new((x_center + half_w, y_pos - half_d, z_base)),  # 1: BR
-        bm.verts.new((x_center + half_w, y_pos + half_d, z_base)),  # 2: BR-post
-        bm.verts.new((x_center - half_w, y_pos + half_d, z_base)),  # 3: BL-post
-        
-        # Apex (cusp)
-        bm.verts.new((x_center, y_pos - half_d * 0.3, z_top)),      # 4: apex labial
-        
-        # Lingual crest
-        bm.verts.new((x_center, y_pos + half_d * 0.2, z_top * 0.85)), # 5: lingual crest
+        bm.verts.new((x_center - half_w, y_pos - half_d, z_base)),
+        bm.verts.new((x_center + half_w, y_pos - half_d, z_base)),
+        bm.verts.new((x_center + half_w, y_pos + half_d, z_base)),
+        bm.verts.new((x_center - half_w, y_pos + half_d, z_base)),
+        bm.verts.new((x_center, y_pos - half_d * 0.3, z_top)),
+        bm.verts.new((x_center, y_pos + half_d * 0.2, z_top * 0.85)),
     ]
     
-    # Create facets (avoid duplicate verts)
-    # Mesial labial face
+    # Create tooth facets
     bm.faces.new([verts[0], verts[4], verts[3]])
-    # Distal labial face
     bm.faces.new([verts[1], verts[2], verts[4]])
-    # Mesial lingual face
     bm.faces.new([verts[3], verts[5], verts[0]])
-    # Distal lingual face
     bm.faces.new([verts[2], verts[1], verts[5]])
-    # Base face
     bm.faces.new([verts[0], verts[1], verts[2], verts[3]])
-    # Apex to lingual
-    bm.faces.new([verts[4], verts[5], verts[4]])
     
     bm.to_mesh(mesh)
     bm.free()
     
     mesh.update()
-    obj.shade_flat()
     
     return obj
 
 def create_dentition(params):
-    """Create all teeth (upper and lower arches)"""
+    """Create all teeth"""
     
     teeth_objects = []
     
-    for arch_idx in range(2):  # 0=upper, 1=lower
+    for arch_idx in range(2):
         is_upper = (arch_idx == 0)
         z_base = params["upper_collar_z_min"] if is_upper else params["lower_collar_z_min"]
         z_top = params["upper_collar_z_max"] if is_upper else params["lower_collar_z_max"]
-        z_center = (z_base + z_top) / 2
         
-        # Distribute teeth along arch
         for tooth_idx in range(params["teeth_per_arch"]):
             u = (tooth_idx / (params["teeth_per_arch"] - 1)) * 2 - 1
             x_center, y_pos = parabolic_arch_curve(u, params["depth"], params["width"])
             
-            # Scale tooth size - smaller towards back
             size_scale = 1.0 - abs(u) * 0.3
             tooth_width = params["central_incisor_width"] * size_scale
             
@@ -227,7 +213,7 @@ def create_dentition(params):
     return teeth_objects
 
 def create_top_hat(params):
-    """Create top hat accessory assembly"""
+    """Create top hat assembly"""
     
     mesh = bpy.data.meshes.new("TopHat")
     obj = bpy.data.objects.new("TopHat", mesh)
@@ -244,44 +230,34 @@ def create_top_hat(params):
     
     verts = []
     
-    # Base ring (at mount point)
     for x in [-hat_width/2, hat_width/2]:
         for y in [0, hat_depth]:
             verts.append(bm.verts.new((x, y, z_mount)))
     
-    # Top ring (tilted)
     for x in [-hat_width/2, hat_width/2]:
         for y in [0, hat_depth]:
             z_offset = hat_height * math.cos(tilt_rad)
             x_offset = hat_height * math.sin(tilt_rad) * 0.3
             verts.append(bm.verts.new((x + x_offset, y, z_mount + z_offset)))
     
-    # Create cube faces (6 faces for rectangular prism)
-    # Bottom
     bm.faces.new([verts[0], verts[2], verts[3], verts[1]])
-    # Top
     bm.faces.new([verts[4], verts[5], verts[7], verts[6]])
-    # Front
     bm.faces.new([verts[0], verts[1], verts[5], verts[4]])
-    # Back
     bm.faces.new([verts[2], verts[6], verts[7], verts[3]])
-    # Left
     bm.faces.new([verts[0], verts[4], verts[6], verts[2]])
-    # Right
     bm.faces.new([verts[1], verts[3], verts[7], verts[5]])
     
     bm.to_mesh(mesh)
     bm.free()
     
     mesh.update()
-    obj.shade_smooth()
+    set_smooth_shading(obj)
     
     return obj
 
 def create_camera_and_lights(params):
-    """Set up camera and lighting for isometric view"""
+    """Set up camera and lighting"""
     
-    # Camera
     bpy.ops.object.camera_add()
     camera = bpy.context.active_object
     camera.name = "IsometricCamera"
@@ -296,20 +272,17 @@ def create_camera_and_lights(params):
         dist * math.sin(el_rad)
     )
     
-    # Point camera at origin
     direction = Vector(camera.location).normalized() * -1
     camera.rotation_euler = direction.to_track_quat('-Z', 'Y').to_euler()
     
     bpy.context.scene.camera = camera
     
-    # Sun light
     bpy.ops.object.light_add(type='SUN', location=(150, 150, 200))
     sun = bpy.context.active_object
     sun.name = "SunLight"
     sun.data.energy = 2.5
     sun.data.angle = math.radians(15)
     
-    # Ambient light
     bpy.ops.object.light_add(type='SUN', location=(-100, -100, 100))
     ambient = bpy.context.active_object
     ambient.name = "AmbientLight"
@@ -318,13 +291,13 @@ def create_camera_and_lights(params):
     return camera, sun, ambient
 
 # ============================================================================
-# MAIN GENERATION FUNCTION
+# MAIN GENERATION
 # ============================================================================
 
 def generate_caine_jaw():
-    """Main function: Generate complete Caine jaw assembly"""
+    """Main function: Generate Caine jaw assembly"""
     
-    # Clear existing mesh objects
+    # Clear scene
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete(use_global=False)
     
@@ -334,7 +307,7 @@ def generate_caine_jaw():
     # Create materials
     materials = create_materials()
     
-    # Create assembly collection
+    # Create collection
     caine_collection = bpy.data.collections.new("CaineJawAssembly")
     bpy.context.scene.collection.children.link(caine_collection)
     
@@ -377,7 +350,7 @@ def generate_caine_jaw():
     caine_collection.objects.link(top_hat)
     print("  ✓ Top hat")
     
-    # Set up camera and lights
+    # Camera and lights
     print("Setting up camera and lights...")
     camera, sun, ambient = create_camera_and_lights(PARAMS)
     bpy.context.collection.objects.unlink(camera)
@@ -390,7 +363,7 @@ def generate_caine_jaw():
     print("  ✓ Sun light")
     print("  ✓ Ambient light")
     
-    # Set viewport shading to Material Preview
+    # Set viewport shading
     for area in bpy.context.screen.areas:
         if area.type == 'VIEW_3D':
             for space in area.spaces:
@@ -403,9 +376,9 @@ def generate_caine_jaw():
     print("=" * 70)
     print("\n💡 Tips for animation:")
     print("  1. Select the CaineJawAssembly collection")
-    print("  2. Use Rotation keyframes for 360° spin")
-    print("  3. Add Zoom keyframes with the camera")
-    print("  4. Render at 1080p or 4K for best quality")
+    print("  2. Add rotation keyframes for 360° spin")
+    print("  3. Add zoom keyframes with the camera")
+    print("  4. Render at 1080p or 4K")
     print()
 
 # ============================================================================
